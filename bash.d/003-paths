@@ -1,0 +1,142 @@
+# vim: set ft=sh:
+_path_debug() {
+    if [[ -z "$DEBUG_BASHRC_PATH" ]]; then
+        return
+    fi
+    echo "$@" >&2
+}
+_add_path() {
+    local P="$1"
+    local PATHVAR="${PATHVAR:-PATH}"
+    if [[ "$P" =~ ^\^ ]]; then
+        local PREFIX=y
+        # strip the leading ^
+        P="${P:1}"
+    fi
+    eval local PATHVAR_VALUE=\"\$$PATHVAR\"
+
+    # avoid invoking external commands here as much as possible
+    # as this could slow-down startup
+
+    if [[ "$PATHVAR_VALUE" =~ "^$P"/*$ ]]; then
+        #echo "skipping $1 - already in path"
+        :
+    elif [[ "$PATHVAR_VALUE" =~ ":$P"/*$ ]]; then
+        #echo "skipping $1 - already in path"
+        :
+    elif [[ "$PATHVAR_VALUE" =~ "$P"/*: ]]; then
+        #echo "skipping $1 - already in path"
+        :
+    else
+        if [ ! -d "$P" ]; then
+            echo "$P isn't a valid path" >&2
+        fi
+        if [[ "$PREFIX" == y ]]; then
+            eval $PATHVAR=\"\$P:\$$PATHVAR\"
+        else
+            eval $PATHVAR=\"\$$PATHVAR:\$P\"
+        fi
+    fi
+}
+
+_add_paths() {
+    # add each individual path if it's not there
+    local IFS=":"
+    for p in "$@"; do
+        p="${p//~\/$HOME}"
+        p="${p// }"
+        p="${p//\$HOME/$HOME}"
+        if [[ -z $p ]]; then
+            continue
+        fi
+        # echo "Adding path '$p'" >&2
+        _add_path $p
+    done
+}
+
+local platform="$(uname)"
+if [[ "$platform" == Linux ]] && grep -q Microsoft /proc/version; then
+    platform="WSL"
+fi
+
+_process_paths() {
+    local PATHVAR=$1
+    shift 1
+
+    eval local PREVIOUS_PATH=\"\$$PATHVAR\"
+    eval $PATHVAR=\"\${ORIGINAL_$PATHVAR-\$$PATHVAR}\"
+    PATHVAR_NEW="$PATHVAR"
+
+    for i in "$@"; do
+        if [[ "$i" =~ -macos$ && "$platform" != Darwin ]]; then
+            _path_debug "Skipping OSX paths $i on $platform"
+            continue
+        fi
+        if [[ "$i" =~ -linux$ && "$platform" != Linux ]]; then
+            _path_debug "Skipping Linux paths $i on $platform"
+            continue
+        fi
+        if [[ "$i" =~ -wsl$ && "$platform" != "WSL" ]]; then
+            _path_debug "Skipping WSL paths $i on $platform"
+            continue
+        fi
+
+        if [[ -f "$i" ]]; then
+            # TODO: Change this to pure bash to speedup bashrc launch time.
+            paths=()
+            local line_num=0
+            while read line; do
+                line_num=$((line_num+1))
+                if [[ "$line" == '#!stop' ]]; then
+                    _path_debug "Stopping @ line ${line_num} in $i"
+                    break
+                elif [[ "${line::1}" == '#' ]]; then
+                    _path_debug "Skipping $line in $i"
+                    continue
+                fi
+                paths+=("$line")
+            done < "$i"
+
+            # First sed command removes commented-out paths
+            # Second sed command ...
+            # #!stop lines indicate that the rest of the file shouldn't be processed
+            # eval paths=\"$(sed 's/^#!stop/@stop/; s/#.*//;' < "$i" | sed ':a;N;$!ba;s/\n/:/g')\"
+            PATHVAR="$PATHVAR" _add_paths "$paths"
+        fi
+    done
+
+    eval local NEW_PATH=\"\$$PATHVAR\"
+    export $PATHVAR
+
+    if [[ -z "$INITIAL_BASHRC_LOAD" && "$PREVIOUS_PATH" != "$NEW_PATH" ]]; then
+        echo "$PATHVAR changed:"
+        local DIFF=
+        local DIFFOPTS=
+        for DIFF in /opt/homebrew/bin/diff diff /usr/bin/diff; do
+            if $DIFF --color --version > /dev/null 2>&1; then
+                DIFFOPTS=--color=always
+                break
+            fi
+        done
+        $DIFF $DIFFOPTS -u <(echo $PREVIOUS_PATH | sed 's/:/\'$'\n/g') <(echo $NEW_PATH | sed 's/:/\'$'\n/g') | tail -n +4
+    fi
+
+}
+
+process_pathdirs() {
+    if [[ -n "$INITIAL_BASHRC_LOAD" ]]; then
+        ORIGINAL_PATH="${_BREW_PATH_PREFIX}$PATH"
+        ORIGINAL_MANPATH="$MANPATH"
+    fi
+
+    if [[ -d ~/.paths ]]; then
+        _process_paths PATH ~/.paths/*
+    fi
+
+    if [[ -d ~/.manpaths ]]; then
+        _process_paths MANPATH ~/.manpaths/*
+    fi
+}
+
+process_pathdirs
+unset platform

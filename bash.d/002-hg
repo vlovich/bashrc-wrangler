@@ -1,0 +1,251 @@
+#!/bin/bash
+
+# Support functions for getting hg info for PS1.
+# See 002-vcs-status which implements status for git & mercurial.
+# The expensive_ versions of the functions are ones you can swap out that
+# behave correctly and are cross-platform but I've found to be slow on
+# large repositories + Windows so I've written a workaround to optimize that
+# path but I haven't tested it on non-Windows machines.
+
+for hg_exe_name in hg.exe hg; do
+    HG_EXE="$(which hg.exe 2>/dev/null)"
+    if [[ -n "$HG_EXE" ]]; then
+        break
+    fi
+done
+
+# Potentially old & untested
+expensive_repo_hg_status() {
+    local BRANCH=
+    hg_feature BRANCH
+    if [[ "$BRANCH" =~ \+$ ]]; then
+        return 1
+    fi
+    return 0
+}
+
+# Potentially old & untested
+expensive_hg_feature() {
+    local COMMIT="$($HG_EXE id -i 2> /dev/null)"
+    if [[ -n "$COMMIT" ]]; then
+        local FEATURE="$($HG_EXE log -r ${COMMIT%*+} --template '{desc|firstline|strip}' 2>/dev/null)"
+        FEATURE=${FEATURE/#cloned from /cl/}
+        # | awk '{print $1}' | sed 's/^\[//; s/\]$//;')"
+        eval $1="'$FEATURE|$COMMIT'"
+    else
+        eval $1=
+    fi
+}
+
+hg_status() {
+    local BRANCH=
+    # This is slow - need to query some kind of watchdog
+    return 0
+    if $HG_EXE st | rg -q '^[MAR!]'; then
+        return 1
+    fi
+    return 0
+}
+
+update_on_feature_change_powershell() {
+    local cache_filename=".${USER}_hg_feature_cache_lookup"
+    local cache_file="$PWD/$cache_filename"
+    local powershell_pid=
+    local powershell2_pid=
+    local hg_feature_pid=
+
+    stop_powershell() {
+        echo "Stopping powershell watcher" >&2
+        if [[ -n "$powershell_pid" ]]; then
+            kill -9 $powershell_pid
+        fi
+        if [[ -n "$powershell2_pid" ]]; then
+            kill -9 "$powershell2_pid"
+        fi
+        wait
+        echo "Stopped powershell watcher" >&2
+    }
+
+    update_feature() {
+        if [[ -n "$hg_feature_pid" && "$hg_feature_pid" -ne 0 ]]; then
+            kill -9 "$hg_feature_pid" || true
+        fi
+        rm -f "${cache_file}" 2>/dev/null
+        (hg_feature_impl > "${cache_file}.tmp"; mv "${cache_file}.tmp" "${cache_file}" 2>/dev/null) &
+        hg_feature_pid=$!
+    }
+
+    trap "stop_powershell" EXIT
+
+    local SCRIPT="$(cat << EOF
+\$watcher = New-Object System.IO.FileSystemWatcher
+\$watcher.Path = "$(wslpath -w "$PWD")"
+\$watcher.Filter = "checkoutidentifier"
+\$watcher.IncludeSubdirectories = \$true
+\$watcher.EnableRaisingEvents = \$true
+
+\$event = \$watcher.WaitForChanged("Deleted")
+EOF
+)"
+
+    local DELETED_FEATURE_WATCHER="$(cat << EOF
+\$watcher = New-Object System.IO.FileSystemWatcher
+\$watcher.Path = "$(wslpath -w "$PWD")"
+\$watcher.Filter = "$cache_filename"
+\$watcher.IncludeSubdirectories = \$true
+\$watcher.EnableRaisingEvents = \$true
+
+\$event = \$watcher.WaitForChanged("Deleted")
+EOF
+)"
+    update_feature
+    wait "$hg_feature_pid"
+
+    (
+        while [[ 1 -eq 1 ]]; do
+            powershell.exe -Command "$DELETED_FEATURE_WATCHER"
+            update_feature
+        done
+    ) &
+    powershell2_pid="$!"
+
+    while [[ 1 -eq 1 ]]; do
+        powershell.exe -Command "$SCRIPT" &
+        powershell_pid="$!"
+        wait "$powershell_pid"
+        local err=$?
+        if [[ $err -ne 0 ]]; then
+            echo "Watcher died abnormally ($err)" >&2
+            return $err
+        fi
+        update_feature
+    done
+}
+
+update_on_feature_change() {
+    set -e
+    set -x
+    local hg_root="$1"
+
+    echo "Starting background monitoring of $hg_root" >&2
+    cd "$hg_root"
+
+    if which powershell.exe > /dev/null 2>&1; then
+        update_on_feature_change_powershell
+    else
+        echo "update_on_feature_change not implemented" >&2
+    fi
+}
+
+wait_for_file_to_exist_powershell() {
+    local f="$(wslpath -w "$1")"
+    local timeout="$2"
+}
+
+wait_for_file_to_exist_poll() {
+    local f="$1"
+    local timeout="$2"
+    local waited_ms=0
+
+    while [[ "$waited_ms" -le "$timeout" ]]; do
+        [[ -e "$f" ]] && return 0
+        sleep 0.05
+        waited_ms=$((waited_ms + 50))
+    done
+    return 1
+}
+
+wait_for_file_to_exist() {
+    local f="$1"
+    # 5 minutes by default
+    local timeout="${2:-300000}"
+    if [[ "$timeout" = "infinity" ]]; then
+        timeout=$((2**63-1))
+    fi
+
+    # 0 means the file exists, 1 means timeout
+    if which powershell.exe > /dev/null 2>&1 && [[ 1 -eq 0 ]]; then
+        wait_for_file_to_exist_powershell "$f" "$timeout"
+    else
+        wait_for_file_to_exist_poll "$f" "$timeout"
+    fi
+    return $?
+}
+
+start_update_on_feature_change_if_not_running() {
+    local hg_root="$1"
+    local pid_file="$hg_root/.${USER}_hg_feature_watcher"
+
+    if [[ ! -d "$hg_root/.hg" ]]; then
+        echo "Invalid hg root as first argument" >&2
+        return 1
+    fi
+
+    if [[ ! -e "$pid_file" ]]; then
+        touch "$pid_file"
+    fi
+
+    (
+        cd "$hg_root"
+        flock -x 200
+        previous_pid="$(cat "$pid_file")"
+        if [[ -n "$previous_pid" ]] && kill -0 "$previous_pid" > /dev/null 2>&1; then
+            exit 1
+        fi
+        flock -u 200
+        update_on_feature_change "$hg_root" 200 < /dev/null > "$pid_file.log" 2>&1 &
+        launched_pid="$!"
+        flock -x 200
+        reread_previous_pid="$(cat "$pid_file")"
+        if [[ "$reread_previous_pid" != "$previous_pid" ]]; then
+            # During the unlock & lock we may have spawned it twice
+            echo "Racily launched two feature watchers - shutting down" >&2
+            kill "$launched_pid"
+            exit 1
+        fi
+        disown "$launched_pid"
+        echo "$launched_pid" > "$pid_file"
+        flock -u 200
+    ) 200> "$pid_file.lock"
+}
+
+cached_hg_feature() {
+    local vcs_type
+    local hg_root=
+
+    get_vcs vcs_type hg_root
+
+    local cache_file="$hg_root/.${USER}_hg_feature_cache_lookup"
+
+    start_update_on_feature_change_if_not_running "$hg_root"
+
+    if [[ ! -e "${cache_file}" ]]; then
+        echo "Waiting for watcher to update feature information" >&2
+        if ! wait_for_file_to_exist "${cache_file}" 2000; then
+            echo "Background hg watcher didn't refresh file - doing manually" >&2
+            hg_feature_impl > "$cache_file"
+        fi
+    fi
+    cat "${cache_file}"
+}
+
+hg_feature_impl() {
+    local feature="$($HG_EXE log --limit 1 -r . --template '{desc|firstline|strip}|{node|short}' 2>/dev/null)"
+    local err=$?
+    if [[ -z "$feature" ]]; then
+        echo "Failed to lookup feature! (err ${err})" >&2
+        local feature="$($HG_EXE log --limit 1 -r . --template '{desc|firstline|strip}|{node|short}')"
+    fi
+    # echo "Actually queried hg feature: $feature" >&2
+    echo "$feature"
+}
+
+hg_feature() {
+    local FEATURE_COMMIT="$(cached_hg_feature)"
+    # Escape any single quotes in the commit string. This works as follows:
+    #  Replace single ' by '\'' which closes the preceding string that's being
+    #  evaluated, inserts an escaped single quote character and opens a new
+    #  single quote string that's closed by the end of the string (or another escape)
+    local FEATURE_COMMIT="${FEATURE_COMMIT//\'/\'\\\'\'}"
+    eval $1="'$FEATURE_COMMIT'"
+}

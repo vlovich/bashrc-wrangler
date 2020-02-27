@@ -1,0 +1,107 @@
+# vim: set ft=sh:
+
+unset _BREW_PATH_PREFIX
+
+if [[ "$_UNAME" != Darwin ]]; then
+    brew_prefix() {
+        return 1
+    }
+    return
+fi
+
+brew_prefix() {
+    if [[ -z "$BREW_PREFIX" ]]; then
+        # executing brew --prefix is slow because ruby is crap/homebrew has a lot of relative startup
+        # overhead
+        debug_bashrc "Computing brew prefix"
+
+        local BREW_CMD="$(which brew 2> /dev/null)"
+        if [ -z "$BREW_CMD" ]; then
+            set +x
+            return 1
+        fi
+
+        #BREW_PREFIX="$(brew --prefix)"
+        local BREW_PREFIX="${BREW_CMD%/bin/brew}"
+    else
+        local BREW_CMD="$BREW_PREFIX/bin/brew"
+    fi
+    local _name="$2"
+    local _prefix="$BREW_PREFIX/opt/${_name}"
+    if [[ ! -d "${_prefix}" ]]; then
+        # _prefix="$("$BREW_CMD" --prefix "${_name}")"
+        echo "Missing brew package ${_name}?" >&2
+    fi
+    if [[ ! -d "${_prefix}" ]]; then
+        eval $1=
+        return 1
+    fi
+    eval $1="${_prefix}"
+}
+
+_setup_homebrew() {
+    debug_bashrc "Setting up homebrew"
+    local BREW_CMD="$(which brew 2> /dev/null)"
+
+    if [[ -z "$BREW_CMD" ]]; then
+        BREW_CMD="/opt/homebrew/bin/brew"
+    fi
+
+    if [[ ! -x "$BREW_CMD" ]]; then
+        echo "No homebrew installed!" >&2
+        brew_prefix() {
+            return 1
+        }
+        return 1
+    fi
+
+    # executing brew --prefix is slow because ruby is crap/homebrew has a lot of relative startup
+    # overhead
+    debug_bashrc "Computing brew prefix"
+
+    #BREW_PREFIX="$(brew --prefix)"
+    local BREW_PREFIX="${BREW_CMD%/bin/brew}"
+
+    debug_bashrc "Adding brew path"
+    _BREW_PATH_PREFIX="$BREW_PREFIX/bin:$BREW_PREFIX/sbin"
+    if brew_prefix GNU_TAR_PREFIX gnu-tar; then
+        _BREW_PATH_PREFIX="${GNU_TAR_PREFIX}/libexec/gnubin:${_BREW_PATH_PREFIX}"
+    fi
+    if brew_prefix COREUTILS_PREFIX coreutils; then
+        _BREW_PATH_PREFIX="${COREUTILS_PREFIX}/libexec/gnubin:${_BREW_PATH_PREFIX}"
+    fi
+
+    if [[ -d "$BREW_PREFIX/opt/sqlite/bin" ]]; then
+        _BREW_PATH_PREFIX="${_BREW_PATH_PREFIX}:${BREW_PREFIX}/opt/sqlite/bin"
+    fi
+    _BREW_PATH_PREFIX="${_BREW_PATH_PREFIX}:"
+
+    # debug_bashrc "Adding python path"
+    # if [[ -n "$PYTHONPATH" ]]; then
+    #   export PYTHONPATH="$BREW_PREFIX/lib/python2.7/site-packages:$PYTHONPATH"
+    # else
+    #   export PYTHONPATH="$BREW_PREFIX/lib/python2.7/site-packages"
+    # fi
+
+    debug_bashrc "Setting up homebrew bash completion"
+    if [ -f $BREW_PREFIX/etc/bash_completion ]; then
+        . $BREW_PREFIX/etc/bash_completion
+    fi
+
+    if [[ -f "$BREW_PREFIX"/share/bash-completion/bash_completion ]]; then
+        . "$BREW_PREFIX"/share/bash-completion/bash_completion
+    fi
+
+    debug_bashrc "Setting up homebrew coreutils"
+    local BREW_COREUTILS=/usr/local/opt/coreutils/libexec/gnubin
+    if [[ -d "$BREW_COREUTILS" ]]; then
+        _BREW_PATH_PREFIX="$BREW_COREUTILS:$_BREW_PATH_PREFIX"
+    fi
+
+    if [[ -e /usr/local/opt/coreutils/libexec/gnuman ]]; then
+        export MANPATH="/usr/local/opt/coreutils/libexec/gnuman:$MANPATH"
+    fi
+}
+
+_setup_homebrew
+unset _setup_homebrew

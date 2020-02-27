@@ -1,0 +1,66 @@
+#!/bin/bash
+
+git_branch() {
+    #git name-rev HEAD 2> /dev/null | awk '{ print $2 }'
+    eval $1=$(git symbolic-ref --short HEAD 2>/dev/null)
+}
+
+git_processing_status() {
+    local GIT_DIR="$(git rev-parse --show-toplevel)"
+    if [[ -d "$GIT_DIR/rebase-merge" ]]; then
+        local STEP="$(cat "$GIT_DIR/rebase-merge/msgnum")"
+        local TOTAL="$(cat "$GIT_DIR/rebase-merge/end")"
+
+        if [[ -f "$GIT_DIR/rebase-merge/interactive" ]]; then
+            echo "REBASE-i [$STEP/$TOTAL]"
+        else
+            echo "REBASE-merge [$STEP/$TOTAL]"
+        fi
+
+        return 1
+    fi
+
+    if [[ -d "$GIT_DIR/rebase-apply" ]]; then
+        local STEP="$(cat "$GIT_DIR/rebase-apply/next")"
+        local TOTAL="$(cat "$GIT_DIR/rebase-apply/last")"
+
+        if [[ -f "$GIT_DIR/rebase-apply/rebasing" ]]; then
+            echo "REBASE [$STEP/$TOTAL]"
+        elif [[ -f "$GIT_DIR/rebase-apply/applying" ]]; then
+            echo "AM [$STEP/$TOTAL]"
+        else
+            echo "AM/REBASE [$STEP/$TOTAL]"
+        fi
+
+        return 1
+    fi
+
+    if [[ -f "$GIT_DIR/MERGE_HEAD" ]]; then
+        return 1
+    fi
+
+    return 0
+}
+
+git_status() {
+    if ! git symbolic-ref -q HEAD > /dev/null 2>&1; then
+        # untracked HEAD
+        return 2
+    fi
+
+    if ! git_processing_status > /dev/null; then
+        return 3
+    fi
+
+    # fixup the tree we're status'ing if we happen to be within the .git
+    # of the tree
+    local WORK_TREE="$PWD"
+    WORK_TREE="${WORK_TREE%%/.git}"
+    WORK_TREE="${WORK_TREE%%/.git/*}"
+
+    if [[ -n $(cd "$WORK_TREE"; git status --untracked=no --short) ]]; then
+        return 1
+    else
+        return 0
+    fi
+}

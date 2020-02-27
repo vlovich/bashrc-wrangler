@@ -1,0 +1,128 @@
+#!/bin/bash
+
+# Generic support functions for determining if the current working directory is under
+# version control & reporting status (branch name & if it's dirty) so that it can be
+# appropriately displayed as colorized.
+
+# This relies on previous VCS support files being sourced before this file (e.g 001-hg, 001-git).
+
+get_vcs() {
+    CURDIR="$PWD"
+    while [[ -n "$CURDIR" ]]; do
+        for subfolder in .hg .git; do
+            if [[ -d "$CURDIR/$subfolder" ]]; then
+                if [[ -n $1 ]]; then
+                    eval $1=$subfolder
+                    eval $2=\"$CURDIR\"
+                fi
+                return 0
+            fi
+        done
+
+        if [[ -f "$CURDIR/.git" ]]; then
+          # Support for worktree
+          if [[ -n $1 ]]; then
+              eval $1=.git
+              eval $2=\"$CURDIR\"
+          fi
+          return 0
+        fi
+
+        CURDIR="${CURDIR%/*}"
+    done
+
+    return 1
+}
+
+
+vcs_branch_status() {
+    # Return 0 if there's no modifications present.
+    # Return 1 if there are uncommitted modifications.
+    # Return 2 if there's a merge in progress
+    # Return 3 if it's not a supported version control system.
+    local VCS_TYPE
+    local root_dir
+    get_vcs VCS_TYPE root_dir
+    case "$VCS_TYPE" in
+        .git) git_status; return $? ;;
+        .hg) hg_status ; return $? ;;
+        *) return 3
+    esac
+}
+
+color_vcs_branch() {
+    # This echos a shell control code to start colorizing the
+    # branch name based on the status of the branch (vcs_branch_status)
+    local GREEN=32
+    local YELLOW=33
+    local RED=34
+    local BRANCH_COLOR=00
+
+    vcs_branch_status
+    case "$?" in
+        0) # clean
+            BRANCH_COLOR=$GREEN
+            ;;
+        1) # modifications
+            BRANCH_COLOR=$YELLOW
+            ;;
+        2) # merge
+            BRANCH_COLOR=$RED
+            ;;
+        3) # not a vcs directory
+            return ;;
+    esac
+
+    printf "\033[01;${BRANCH_COLOR}m"
+}
+
+vcs_echo() {
+    # If this is under version control then echo all arguments passed.
+    # If not then just return an error code.
+    local vcs_type=
+    local root_dir=
+    if ! get_vcs vcs_type root_dir > /dev/null; then
+        return 1
+    fi
+
+    echo "$@"
+}
+
+formatted_vcs_branch() {
+    # Echo the name of the version control branch as colorized (if supported).
+    # If not under version control then nothing is done and an error code is returned.
+    local COLOR_PROMPT=$1
+    local BRANCH=
+    local VCS=
+    local root_dir=
+    get_vcs VCS root_dir
+    case "$VCS" in
+        .git) git_branch BRANCH ;;
+        .hg) hg_feature BRANCH ;;
+        *) return 1
+    esac
+
+    if [[ "$COLOR_PROMPT" != 1 ]]; then
+        vcs_branch_status
+        case $? in
+            0) # clean
+                ;;
+            1) # dirty
+                BRANCH="$BRANCH+"
+                ;;
+            2) # merge in progress
+                BRANCH="$BRANCH**"
+                ;;
+        esac
+    fi
+
+    #if [ -z "$BRANCH" ]; then
+    #    BRANCH=$(hg_feature)
+    #    if [[ -z "$BRANCH" ]]; then
+    #        return
+    #    fi
+    #
+    #fi
+
+    echo "$BRANCH"
+}

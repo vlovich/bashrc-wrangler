@@ -1,0 +1,3 @@
+# vim: set ft=sh:
+
+shopt -s histappend

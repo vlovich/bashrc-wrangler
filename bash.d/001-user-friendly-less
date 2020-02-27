@@ -1,0 +1,11 @@
+#!/bin/bash
+
+# make less more friendly for non-text input files, see lesspipe(1)
+if which lessfile > /dev/null; then
+    export LESSOPEN="/usr/bin/lessfile %s"
+    export LESSCLOSE="/usr/bin/lessfile %s %s"
+elif which lesspipe > /dev/null; then
+    export LESSOPEN="/usr/bin/lesspipe %s"
+    export LESSCLOSE="/usr/bin/lesspipe %s %s"
+fi
+# [ -x /usr/bin/lesspipe ] && eval "$(SHELL=/bin/sh lesspipe)"

@@ -1,0 +1,284 @@
+#!/bin/bash
+
+_BASHRC_LOADED=${_BASHRC_LOADED-0}
+if [[ "$_BASHRC_LOADED" == "0" ]]; then
+    INITIAL_BASHRC_LOAD=1
+else
+    INITIAL_BASHRC_LOAD=
+fi
+
+if which ts > /dev/null; then
+    _PROFILER_FDS=()
+    enable_profiler() {
+        [[ "$PROFILE_STARTUP" == y ]] || return 0
+
+        # https://mdjnewman.me/2017/10/debugging-slow-bash-startup-files/
+        local FILE="$1"
+        if [[ "${#_PROFILER_FDS[@]}" -eq 0 ]]; then
+            local FD=5
+            # echo "Starting profiler $FILE" >&2
+            exec 5> >(ts -i "%.s" > "$FILE")
+            export BASH_XTRACEFD=$FD
+            set -x
+        else
+            local FD=$((${_PROFILER_FDS[-1]} + 1))
+            # echo "Using FD=$FD for nested profiler $FILE"
+            # exec 6> >(ts -i "%.s" | tee "$FILE" >&5)
+            eval 'exec '$FD'> >(ts -i "%.s" | tee "$FILE" >&5)'
+            export BASH_XTRACEFD=$FD
+            # eval exec $FD>&5
+            # eval exec $FD> >(ts -i "%.s" > $FILE)
+        fi
+        _PROFILER_FDS+=($FD)
+    }
+
+    disable_profiler() {
+        [[ "$PROFILE_STARTUP" == y ]] || return 0
+
+        local FD="${_PROFILER_FDS[-1]}"
+        unset "_PROFILER_FDS[${#_PROFILER_FDS[@]} - 1]"
+        if [[ "$FD" -eq 5 ]]; then
+            # echo "Disabling top-most profiler"
+            set +x
+            unset BASH_XTRACEFD
+            exec 5>/dev/null
+        else
+            # echo "Disabling nested profiler $FD"
+            eval 'exec '$FD'>/dev/null'
+            export BASH_XTRACEFD=$((FD-1))
+        fi
+    }
+else
+    enable_profiler() {
+        [[ "$PROFILE_STARTUP" == y ]] || return 0
+
+        if [[ -n "$_PROFILING" ]]; then
+            # Nested profiling not supported
+            return 0
+        fi
+        local FILE=$1
+        _PROFILING=y
+
+        if [[ "$(uname)" == Linux ]]; then
+            PS4='+ $(date "+%s.%N")\011$BASH_SOURCE\011$BASH_LINENO\011 '
+        else
+            PS4='+ $(/opt/homebrew/opt/coreutils/libexec/gnubin/date "+%s.%N")\011$BASH_SOURCE\011$BASH_LINENO\011 '
+        fi
+        exec 3>&2 2>~/profile_bashrc.txt
+        set -x
+    }
+
+    disable_profiler() {
+        [[ "$PROFILE_STARTUP" == y ]] || return 0
+
+        set +x
+        # TODO: is this the right way to disable this?
+        exec 2>&3 3>&0
+        unset PS4
+        unset _PROFILING
+    }
+fi
+
+# PROFILE_STARTUP=y
+enable_profiler ~/profile_bashrc.txt
+
+_DATE_CMD="date"
+_DEBUG_DATE_FMT="%s"
+_UNAME="$(uname)"
+
+if [[ -x "/opt/homebrew/opt/coreutils/libexec/gnubin/date" ]]; then
+    _DATE_CMD="/opt/homebrew/opt/coreutils/libexec/gnubin/date"
+    _DEBUG_DATE_FMT="%s.%3N"
+elif [[ "$_UNAME" != "Darwin" ]]; then
+    _DEBUG_DATE_FMT="%s.%3N"
+fi
+
+_FLOATING_POINT_DURATION="$(which bc > /dev/null && echo Y)"
+unset _FLOATING_POINT_TIMESTAMP
+
+if [[ "${BASH_VERSION%%.*}" -lt 5 ]]; then
+    if [[ "$_DEBUG_DATE_FMT" != "%s" ]]; then
+        _FLOATING_POINT_TIMESTAMP=y
+        timestamp() {
+            eval $1=$(${_DATE_CMD} "+${_DEBUG_DATE_FMT}")
+        }
+    else
+        echo "Fast timestamp"
+        timestamp() {
+            printf -v "$1" "%(%s)T"
+        }
+    fi
+else
+    _FLOATING_POINT_TIMESTAMP=y
+    timestamp() {
+        printf -v "$1" "%.3f" $EPOCHREALTIME
+    }
+fi
+
+duration() {
+    local variable="$1"
+    local begin="$2"
+    local end="$3"
+    if [[ -n "$_FLOATING_POINT_DURATION" ]]; then
+        eval $variable=$(bc -l <<< "${end} - ${begin}")
+    else
+        local result=$((${end%.*} - ${begin%.*}))
+        eval $variable=$result
+    fi
+}
+
+duration_compare() {
+    # Return 0 if $1 $2 $3 evaluates to true else 1
+    local duration="$1"
+    local operation="$2"
+    local comparison_value="$3"
+    if [[ -n "$_FLOATING_POINT_DURATION" ]]; then
+        return $(bc -l <<< "!($duration $operation $comparison_value)")
+    fi
+
+    case "$operation" in
+        '>') operation=gt;;
+        '>=') operation=ge;;
+        '<') operation=lt;;
+        '<=') operation=le;;
+        '=') operation=eq;;
+        *) echo "Invalid operation $operation" >&2; return 1;;
+    esac
+    eval "$(echo [[ $duration -$operation $comparison_value ]])"
+}
+
+coarse_debug_bashrc() {
+    #echo "$("${_DATE_CMD}" "+${_DEBUG_DATE_FMT}") $@"
+    :
+}
+
+debug_bashrc() {
+    #echo "$("${_DATE_CMD}" "+${_DEBUG_DATE_FMT}") $@"
+    :
+}
+
+coarse_debug_bashrc "Started"
+
+timestamp BASHRC_START
+
+get_stack () {
+   STACK=""
+   # to avoid noise we start with 1 to skip get_stack caller
+   local i
+   local stack_size=${#FUNCNAME[@]}
+   for (( i=1; i<$stack_size ; i++ )); do
+      local func="${FUNCNAME[$i]}"
+      [ x$func = x ] && func=MAIN
+      local linen="${BASH_LINENO[(( i - 1 ))]}"
+      local src="${BASH_SOURCE[$i]}"
+      [ x"$src" = x ] && src=non_file_source
+      STACK+=$'\n'"   "$func" "$src" "$linen
+   done
+}
+
+
+last_cmd() {
+    local STATE=$?
+    if [[ "$STATE" -ne 0 ]]; then
+        echo "$STATE "
+    fi
+}
+
+update_cmd_timestamp() {
+    CMD_TIMESTAMP='\D{%l:%M:%S}'
+    return
+
+    if [[ -z _LAST_CMD_TIMESTAMP ]]; then
+        _LAST_CMD_TIMESTAMP="$NOW"
+    else
+        return
+    fi
+
+    echo "$NOW"
+}
+
+# Alias definitions.
+# You may want to put all your additions into a separate file like
+# ~/.bash_aliases, instead of adding them here directly.
+# See /usr/share/doc/bash-doc/examples in the bash-doc package.
+
+debug_bashrc "Processing bash aliases"
+
+if [ -f ~/.bash_aliases ]; then
+    . ~/.bash_aliases
+fi
+
+debug_bashrc "Processing bash profile extensions"
+
+load_scripts() {
+    local script_file
+    local script_start
+    local script_end
+    local script_duration
+
+    for script_file in ~/.bash.d/*; do
+        if [[ $script_file =~ 000-setup$ ]]; then
+            continue
+        fi
+        if [[ $script_file =~ /disabled$ ]]; then
+            continue
+        fi
+
+        if [[ ! -f "$script_file" ]]; then
+            echo "Skipping $script_file" >&2
+            continue
+        fi
+        debug_bashrc "Processing bash profile extension $script_file"
+        # timestamp script_start
+        enable_profiler ~/profile_${script_file##*/}.txt
+        . "$script_file"
+        disable_profiler
+        # timestamp script_end
+        # duration script_duration "${script_start}" "${script_end}"
+        # echo "Took $script_duration s to process $script_file" >&2
+    done
+}
+load_scripts
+
+# Cleanup any intermediary global variables that were set during loading of the profile
+
+coarse_debug_bashrc "Done"
+
+timestamp BASHRC_END
+
+evaluate_bashrc_duration() {
+    local BASHRC_DURATION
+    duration BASHRC_DURATION ${BASHRC_START} ${BASHRC_END}
+
+    if [[ -n "$_FLOATING_POINT_DURATION" && -n "$_FLOATING_POINT_TIMESTAMP" ]]; then
+        local COMPARISON=">="
+    else
+        local COMPARISON=">"
+    fi
+
+    if duration_compare "${BASHRC_DURATION}" "${COMPARISON}" '1'; then
+        echo "[WARN] .bashrc slowdown. Took $BASHRC_DURATION ($BASHRC_END - $BASHRC_START, $COMPARISON)" >&2
+    else
+        # echo "[OK] .bashrc took $BASHRC_DURATION" >&2
+        :
+    fi
+}
+
+evaluate_bashrc_duration
+unset BASHRC_END
+unset BASHRC_START
+unset evaluate_bashrc_duration
+
+_BASHRC_LOADED=
+unset INITIAL_BASHRC_LOAD
+unset _UNAME
+unset _DEBUG_DATE_FMT
+unset _DATE_CMD
+unset debug_bashrc
+unset timestamp
+unset coarse_debug_bashrc
+unset color_prompt
+unset force_color_prompt
+
+disable_profiler
+unset PROFILE_STARTUP
