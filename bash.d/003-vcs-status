@@ -34,6 +34,15 @@ get_vcs() {
     return 1
 }
 
+path_to_vcs_root() {
+    local REPO_ROOT=
+    local VCS_TYPE=
+    get_vcs VCS_TYPE REPO_ROOT || return $?
+    [[ -n "$REPO_ROOT" ]] || return 1
+    local BASE="$(realpath --relative-to="$(pwd)" "$REPO_ROOT")"
+    [[ -n "$BASE" ]] || return 1
+    echo "$BASE"
+}
 
 vcs_branch_status() {
     # Return 0 if there's no modifications present.
