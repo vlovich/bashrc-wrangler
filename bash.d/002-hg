@@ -2,10 +2,6 @@
 
 # Support functions for getting hg info for PS1.
 # See 002-vcs-status which implements status for git & mercurial.
-# The expensive_ versions of the functions are ones you can swap out that
-# behave correctly and are cross-platform but I've found to be slow on
-# large repositories + Windows so I've written a workaround to optimize that
-# path but I haven't tested it on non-Windows machines.
 
 for hg_exe_name in hg.exe hg; do
     HG_EXE="$(which hg.exe 2>/dev/null)"
@@ -14,8 +10,7 @@ for hg_exe_name in hg.exe hg; do
     fi
 done
 
-# Potentially old & untested
-expensive_repo_hg_status() {
+wifislam_hg_status() {
     local BRANCH=
     hg_feature BRANCH
     if [[ "$BRANCH" =~ \+$ ]]; then
@@ -24,8 +19,7 @@ expensive_repo_hg_status() {
     return 0
 }
 
-# Potentially old & untested
-expensive_hg_feature() {
+wifislam_hg_feature() {
     local COMMIT="$($HG_EXE id -i 2> /dev/null)"
     if [[ -n "$COMMIT" ]]; then
         local FEATURE="$($HG_EXE log -r ${COMMIT%*+} --template '{desc|firstline|strip}' 2>/dev/null)"
@@ -38,6 +32,7 @@ expensive_hg_feature() {
 }
 
 hg_status() {
+    # Facebook
     local BRANCH=
     # This is slow - need to query some kind of watchdog
     return 0
@@ -210,6 +205,7 @@ start_update_on_feature_change_if_not_running() {
 }
 
 cached_hg_feature() {
+    # Facebook
     local vcs_type
     local hg_root=
 
@@ -230,6 +226,7 @@ cached_hg_feature() {
 }
 
 hg_feature_impl() {
+    # Facebook
     local feature="$($HG_EXE log --limit 1 -r . --template '{desc|firstline|strip}|{node|short}' 2>/dev/null)"
     local err=$?
     if [[ -z "$feature" ]]; then
@@ -241,6 +238,7 @@ hg_feature_impl() {
 }
 
 hg_feature() {
+    # Facebook
     local FEATURE_COMMIT="$(cached_hg_feature)"
     # Escape any single quotes in the commit string. This works as follows:
     #  Replace single ' by '\'' which closes the preceding string that's being

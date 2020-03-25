@@ -54,7 +54,7 @@ _add_paths() {
     done
 }
 
-local platform="$(uname)"
+platform="$(uname)"
 if [[ "$platform" == Linux ]] && grep -q Microsoft /proc/version; then
     platform="WSL"
 fi
